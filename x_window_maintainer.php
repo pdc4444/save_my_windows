@@ -20,14 +20,12 @@ Example startup script:
 #!/bin/bash
 cd /path/to/script && php x_window_maintainer.php --close && php x_window_maintainer.php --load
 
-This script has some limitations:
-1.) Duplicate windows will end up on top of eachother because I don't yet have a good way of identifying and separating duplicates.
-2.) This script sometimes cannot save the correct command which means it will fail to reopen the saved window.
-        If this happens open the saved_windows.json file, find the window which didn't load and populate the Override Command with the correct command that will open the window.
+This script sometimes cannot save the correct command which means it will fail to reopen the saved window.
+If this happens open the saved_windows.json file, find the window which didn't load and populate the Override Command with the correct command that will open the window.
 
 */
 
-$longopts = ['save', 'load', 'help', 'review_saved', 'review_current', 'close'];
+$longopts = ['save', 'load', 'help', 'review_saved::', 'review_current', 'close', 'load_file:'];
 $cli_opts = getOpt('', $longopts);
 $save_location = __DIR__ . DIRECTORY_SEPARATOR . 'saved_windows.json';
 
@@ -40,11 +38,14 @@ if (!empty($cli_opts)) {
             case 'load':
                 load($save_location);
                 break;
+            case 'load_file':
+                custom_load($value);
+                break;
             case 'review_current':
                 review();
                 break;
             case 'review_saved':
-                review($save_location);
+                review($save_location, $value);
                 break;
             case 'close':
                 close();
@@ -62,6 +63,53 @@ if (!empty($cli_opts)) {
     help();
 }
 
+/**
+ * This function takes a directory path and loads that json object instead. Useful for people that have multiple saved desktops and want to load a different configuration.
+ * 
+ * @param $value - The file path to the saved_windows.json file that you wish to load
+ */
+function custom_load($value)
+{
+    if (file_exists($value) && strpos($value, '.json') !== FALSE) {
+        load($value);
+    }
+}
+
+
+/**
+ * This function returns a list of currently open window ids vis wnckprop
+ * 
+ * @return array $windows - The list of currently open windows
+ */
+function getWindowList()
+{
+    $cmd = 'wnckprop --list';
+    $results = my_shell_exec($cmd);
+    $windows = [];
+    if (!empty($results['stdout'])) {
+        $result_array = explode("\n", $results['stdout']);
+        foreach ($result_array as $line) {
+            $line_array = explode(":", $line);
+            if (!empty($line_array[0])){
+                $windows[] = $line_array[0];
+            }
+        }
+    }
+    return $windows;
+}
+
+/**
+ * This function compares the currently open windows with a previous list of open windows and returns the difference
+ * 
+ * @param array $previous_windows - An array of previously opened windows
+ * @return array $diff - An array of the differences found
+ */
+function getWindowDiff($previous_windows)
+{
+    $current_windows = getWindowList();
+    $diff = array_diff($current_windows, $previous_windows);
+    return $diff;
+}
 
 /**
  * This function loads the saved window locations and uses several tools to open each saved window and put them in their correct spot.
@@ -73,20 +121,99 @@ function load($save_location)
 {
     $raw_data = file_get_contents($save_location);
     $previous_windows = json_decode($raw_data, true);
-    //Open each window, use the override command if it exists
+
+    //Set the custom xprop for the previous window data if it does not exist (compatibility for older saved window configurations)
+    $xprop_counter = 0;
     foreach ($previous_windows as $previous_window_id => $previous_window_data) {
-        if (!empty($previous_window_data['Override Command'])) {
-            exec($previous_window_data['Override Command'] . ' > /dev/null 2>&1 &');    
-        } else {
-            exec($previous_window_data['Process Name'] . ' > /dev/null 2>&1 &');
+        if (!isset($previous_window_data['Custom xprop'])) {
+            $previous_windows[$previous_window_id]['Custom xprop'] = $xprop_counter;
+        }
+        $xprop_counter++;
+    }
+
+    //Get all the WM_CLASS values from $previous_windows and find the windows with duplicate WM_CLASS
+    $wm_classes = array_column($previous_windows, 'WM_CLASS');
+    $class_count = array_count_values($wm_classes);
+    $duplicate_wm_classes = [];
+    foreach ($class_count as $class => $class_occurences) {
+        if ($class_occurences > 1) {
+            $duplicate_wm_classes[] = $class; 
         }
     }
+
+    $notated_windows = [];
+    foreach ($previous_windows as $previous_window_id => $previous_window_data) {
+        if (in_array($previous_window_data['WM_CLASS'], $duplicate_wm_classes)) {
+            if (!empty($previous_window_data['Override Command'])) {
+                exec($previous_window_data['Override Command'] . ' > /dev/null 2>&1 &');    
+            } else {
+                exec($previous_window_data['Process Name'] . ' > /dev/null 2>&1 &');
+            }
+            $not_yet_loaded = true;
+            $sleep_time = 0;
+            $sleep_increment = 500000;
+            while ($not_yet_loaded) {
+                usleep($sleep_time);
+                $new_windows = getWindowDiff($notated_windows);
+                if(!empty($new_windows)) {
+                    $new_window = current($new_windows);
+                    $notated_windows[] = $new_window;
+                    $not_yet_loaded = false;
+                }
+                $sleep_time += $sleep_increment;
+            }
+    
+            //Set the custom xprop one window at a time for windows that have duplicate WM_CLASS
+            $cmd = 'xprop -id ' . $new_window . ' -format custom_xprop 8s -set custom_xprop "' . $previous_window_data['Custom xprop'] . '"';
+            exec($cmd);
+        }
+    }
+
+    //Open each unique window, use the override command if it exists
+    foreach ($previous_windows as $previous_window_id => $previous_window_data) {
+        if (!in_array($previous_window_data['WM_CLASS'], $duplicate_wm_classes)) {
+            if (!empty($previous_window_data['Override Command'])) {
+                exec($previous_window_data['Override Command'] . ' > /dev/null 2>&1 &');    
+            } else {
+                exec($previous_window_data['Process Name'] . ' > /dev/null 2>&1 &');
+            }
+        }
+    }
+
     $desktops = array_column($previous_windows, 'Desktop');
     $desktops = array_unique($desktops);
     sort($desktops);
     sleep(10); //Give time for the new windows to all load
     $new_windows = compileWindows();
 
+    //Ensure that the freshly opened windows register as not having an xprop assigned. The xprop will persist from applications that close their window but stay open in the background (like Discord)
+    foreach ($new_windows as $new_window_id => $new_window_data) {
+        if (isset($new_window_data['Custom xprop']) && !in_array($new_window_data['WM_CLASS'], $duplicate_wm_classes)) {
+            unset($new_windows[$new_window_id]['Custom xprop']);
+        }
+    }
+
+    //Set the custom xprop on each window, this is needed to tell windows apart that have the same WM_CLASS. Allows the script to open multiple windows of the same type.
+    foreach ($previous_windows as $previous_window_id => $previous_window_data) {
+        foreach ($new_windows as $new_window_id => $new_window_data) {
+            $cmd = 'xprop -id ' . $new_window_id . ' -format custom_xprop 8s -set custom_xprop "' . $previous_window_data['Custom xprop'] . '"';
+            if (!empty($previous_window_data['Override Command']) && $new_window_data['Process Name'] == $previous_window_data['Override Command'] && !isset($new_window_data['Custom xprop'])) {
+                $new_windows[$new_window_id]['Custom xprop'] = $previous_window_data['Custom xprop'];
+                exec($cmd);
+                continue 2;
+            } else if ($new_window_data['Process Name'] == $previous_window_data['Process Name'] && !isset($new_window_data['Custom xprop'])) {
+                $new_windows[$new_window_id]['Custom xprop'] = $previous_window_data['Custom xprop'];
+                exec($cmd);
+                continue 2;
+            } else if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS'] && !isset($new_window_data['Custom xprop'])) {
+                $new_windows[$new_window_id]['Custom xprop'] = $previous_window_data['Custom xprop'];
+                exec($cmd);
+                continue 2;
+            }
+        }
+    }
+
+    $new_windows = compileWindows();
     //Set all new windows to 1, 1 to resize without an issue
     foreach ($new_windows as $new_window_id => $new_window_data) {
         $cmd = 'wmctrl -i -r ' . $new_window_id . ' -e "0,1,1,0,0"';
@@ -96,12 +223,12 @@ function load($save_location)
     //Set height and width
     foreach ($previous_windows as $previous_window_id => $previous_window_data) {
         foreach ($new_windows as $new_window_id => $new_window_data) {
-            if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS']) {
+            if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS'] && $new_window_data['Custom xprop'] == $previous_window_data['Custom xprop']) {
                 $x = trim($previous_window_data['Xpos']);
                 $y = trim($previous_window_data['Ypos']);
                 $w = trim($previous_window_data['Width']);
                 $h = trim($previous_window_data['Height']);
-                $cmd = 'wnckprop --window ' . $new_window_id . ' --set-width=' . $w . ' --set-height=' . $h;
+                $cmd = 'wnckprop --window ' . $new_window_id . ' --unmaximize --set-width=' . $w . ' --set-height=' . $h;
                 exec($cmd);
             }
         }
@@ -110,7 +237,7 @@ function load($save_location)
     //Match the current windows WM_CLASS to the saved WM_CLASS and attempt to move it into the correct location via wmctrl
     foreach ($previous_windows as $previous_window_id => $previous_window_data) {
         foreach ($new_windows as $new_window_id => $new_window_data) {
-            if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS']) {
+            if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS'] && $new_window_data['Custom xprop'] == $previous_window_data['Custom xprop']) {
                 //Move the window to it's saved location // X, Y, W, H,
                 $x = trim($previous_window_data['Xpos']);
                 $y = trim($previous_window_data['Ypos']);
@@ -126,7 +253,7 @@ function load($save_location)
     $new_windows = compileWindows();
     foreach ($previous_windows as $previous_window_id => $previous_window_data) {
         foreach ($new_windows as $new_window_id => $new_window_data) {
-            if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS']) {
+            if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS'] && $new_window_data['Custom xprop'] == $previous_window_data['Custom xprop']) {
                 $x = trim($previous_window_data['Xpos']);
                 $y = trim($previous_window_data['Ypos']);
                 if (trim($new_window_data['Xpos']) != $x || trim($new_window_data['Ypos']) != $y) {
@@ -141,7 +268,7 @@ function load($save_location)
     $new_windows = compileWindows();
     foreach ($previous_windows as $previous_window_id => $previous_window_data) {
         foreach ($new_windows as $new_window_id => $new_window_data) {
-            if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS']) {
+            if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS'] && $new_window_data['Custom xprop'] == $previous_window_data['Custom xprop']) {
                 $x = trim($previous_window_data['Xpos']);
                 $y = trim($previous_window_data['Ypos']);
                 $w = trim($previous_window_data['Width']);
@@ -181,7 +308,7 @@ function load($save_location)
         foreach ($previous_windows as $previous_window_id => $previous_window_data) {
             if ($previous_window_data['Desktop'] == $desktop) {
                 foreach ($new_windows as $new_window_id => $new_window_data) {
-                    if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS']) {
+                    if ($new_window_data['WM_CLASS'] == $previous_window_data['WM_CLASS'] && $new_window_data['Custom xprop'] == $previous_window_data['Custom xprop']) {
                         $cmd = 'wmctrl -i -r ' . $new_window_id . ' -t ' . $desktop;
                         exec($cmd);
                         unset($new_windows[$new_window_id]);
@@ -210,12 +337,18 @@ function close()
  * This function prints an array to the cli for the user to review either the saved or current window positions
  * 
  * @param boolean $save_location - Used to determine if the user wants to review the saved window locations.
+ * @param mixed $user_specificed_location - If both this and $save_location is not false, we will load the windows from the user passed file path
  */
-function review($save_location = FALSE)
+function review($save_location = FALSE, $user_specificed_location = FALSE)
 {
     if ($save_location !== FALSE) {
-        $raw_data = file_get_contents($save_location);
-        $windows = json_decode($raw_data, true);
+        $review_file = ($user_specificed_location) ? $user_specificed_location : $save_location;
+        if (file_exists($review_file) && strpos($review_file, '.json') !== FALSE) {
+            $raw_data = file_get_contents($save_location);
+            $windows = json_decode($raw_data, true);
+        } else {
+            exit("Unable to read the saved json file!\nCheck permissions, and / or verify that the path is correct.\n");
+        }
     } else {
         $windows = compileWindows();
     }
@@ -229,7 +362,7 @@ function review($save_location = FALSE)
  */
 function save($save_location)
 {
-    $windows = compileWindows();
+    $windows = compileWindows(true);
     $data = json_encode($windows);
     $data = substr_replace($data,"{\n\n",0,1);
     $data = str_replace('{"',"{\n" . '"',$data);
@@ -256,10 +389,8 @@ function extendedHelpText()
     $text .= "\nTo use this script, open the windows you'd like to save and put them in whatever location on your desktop. Then run this script with the save command.";
     $text .= "\nOnce the windows are stored in a saved file you can run the load command to reload all the windows that were captured with the save command.";
     $text .= "\n";
-    $text .= "\nThis script has some limitations:";
-    $text .= "\n1.) Duplicate windows will end up on top of eachother because I don't yet have a good way of identifying and separating duplicates.";
-    $text .= "\n2.) This script sometimes cannot save the correct command which means it will fail to reopen the saved window.";
-    $text .= "\n         If this happens open the saved_windows.json file, find the window which didn't load and populate the Override Command with the correct command that will open the window.";
+    $text .= "\nNote: This script sometimes cannot save the correct command which means it will fail to reopen the saved window.";
+    $text .= "\nIf this happens open the saved_windows.json file, find the window which didn't load and populate the Override Command with the correct command that will open the window.";
     echo $text . "\n";
     help();
 }
@@ -272,8 +403,12 @@ function help()
     $text  = "\nCommands:";
     $text .= "\n--save              Save the current open window locations";
     $text .= "\n--load              Closes all open windows and opens the saved windows and puts them into their proper spots.";
+    $text .= "\n--load_file         The same as --load only you can specifcy a file path of the json configuration you want to load.";
+    $text .= "\n                        Example: php x_window_maintainer.php --load_file=/path/to/saved_json_file.json";
     $text .= "\n--review_current    Prints an array to the command line that displays all the current window location information.";
     $text .= "\n--review_saved      Prints an array to the command line that displays all saved window location information.";
+    $text .= "\n                    You can also specify a file path to review a specific json file.";
+    $text .= "\n                        Example: php x_window_maintainer.php --review_saved=/path/to/saved_json_file.json";
     $text .= "\n--close             Closes all open windows.";
     $text .= "\n--help              Prints the extended help text.";
     echo $text . "\n";
@@ -283,15 +418,17 @@ function help()
  * This function compiles the array of currently opened windows and attempts to predict the process name so that we may reopen it when load() is called.
  * Most of the information in this function comes from the wmctrl command.
  * 
+ * @param boolean $saving - A flag to detect whether or not we are saving the current window configuration.
  * @return array $compiled_windows - A multidimensional array collected by window IDs with specific process and location information for each window.
  */
-function compileWindows()
+function compileWindows($saving = false)
 {
     $cmd = 'wmctrl -lxpG';
     $result = my_shell_exec($cmd);
     $compiled_windows = [];
     $process_list = getProcessList();
     $flatpak_list = getFlatPaks();
+    $custom_xprop = 0;
     if (empty($result['stderr'])) {
         $raw_list = explode("\n", $result['stdout']);
         foreach ($raw_list as $key => $line) {
@@ -306,6 +443,17 @@ function compileWindows()
                 $compiled_windows[$window_key]['Width'] = $line_array[5];
                 $compiled_windows[$window_key]['Height'] = $line_array[6];
                 $compiled_windows[$window_key]['WM_CLASS'] = $line_array[7];
+
+                //Get the custom xprop if it exists
+                $cmd = 'xprop -id ' . $window_key . ' | grep custom_xprop';
+                $results = my_shell_exec($cmd);
+                if (!empty($results['stdout'])) {
+                    $compiled_windows[$window_key]['Custom xprop'] = trim(str_replace('"','',explode(' = ',$results['stdout'])[1]));
+                } else if ($saving === true) {
+                    $compiled_windows[$window_key]['Custom xprop'] = $custom_xprop;
+                    $custom_xprop++;
+                }
+
                 if (array_key_exists($line_array[2], $process_list) && strpos($process_list[$line_array[2]], '[kthreadd]') === FALSE) {
                     $compiled_windows[$window_key]['Process Name'] = $process_list[$line_array[2]];
                     $compiled_windows[$window_key]['PID'] = $line_array[2];
