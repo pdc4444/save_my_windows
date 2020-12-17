@@ -26,5 +26,5 @@ Example startup script:
     #!/bin/bash
     cd /path/to/script && php x_window_maintainer.php --close && php x_window_maintainer.php --load
 
-    This script sometimes cannot save the correct command which means it will fail to reopen the saved window.
-    If this happens open the saved_windows.json file, find the window which didn't load and populate the Override Command with the correct command that will open the window.
+NOTE: This script sometimes cannot save the correct command which means it will fail to reopen the saved window.
+If this happens open the saved_windows.json file, find the window which didn't load and populate the Override Command with the correct command that will open the window.
