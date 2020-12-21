@@ -152,6 +152,9 @@ function load($save_location)
             $not_yet_loaded = true;
             $sleep_time = 0;
             $sleep_increment = 500000;
+            if (isset($previous_window_data['Window Warmup Delay']) && !empty($previous_window_data['Window Warmup Delay'])) {
+                sleep(intval($previous_window_data['Window Warmup Delay']));
+            }
             while ($not_yet_loaded) {
                 usleep($sleep_time);
                 $new_windows = getWindowDiff($notated_windows);
@@ -391,6 +394,10 @@ function extendedHelpText()
     $text .= "\n";
     $text .= "\nNote: This script sometimes cannot save the correct command which means it will fail to reopen the saved window.";
     $text .= "\nIf this happens open the saved_windows.json file, find the window which didn't load and populate the Override Command with the correct command that will open the window.";
+    $text .= "\nAdditionally, if you have saved windows that are two of the same thing they share the same WM_CLASS, these are opened first and one at a time to carefully notate which window is which so that the script knows where to place it.";
+    $text .= "\nIf you have windows with similar WM_CLASS and they take a long time to warm up (such as a connection that has an initial popup that says connecting but ends in a different window), then you should tune the Window Warmup Delay setting in the json config.";
+    $text .= "\nThe Window Warmup Delay accepts an integer which translates into how many seconds the script will wait after opening the window. You should tune this setting to the amount of time the window you're opening reaches it's ready state.";
+    $text .= "\nFailure to do so will result in windows being misplaced or not opened. For clarity, this is ONLY an issue with windows that share WM_CLASS. Unique windows will not need this type of tuning.";
     echo $text . "\n";
     help();
 }
@@ -463,6 +470,7 @@ function compileWindows($saving = false)
                     $compiled_windows[$window_key]['PID'] = $prediction['PID'];
                 }
                 $compiled_windows[$window_key]['Override Command'] = "";
+                $compiled_windows[$window_key]['Window Warmup Delay'] = "";
                 foreach ($compiled_windows[$window_key] as $the_window_array_key => $the_window_array_value) {
                     $compiled_windows[$window_key][$the_window_array_key] = trim($the_window_array_value);
                 }

@@ -28,3 +28,7 @@ Example startup script:
 
 NOTE: This script sometimes cannot save the correct command which means it will fail to reopen the saved window.
 If this happens open the saved_windows.json file, find the window which didn't load and populate the Override Command with the correct command that will open the window.
+Additionally, if you have saved windows that are two of the same thing they share the same WM_CLASS, these are opened first and one at a time to carefully notate which window is which so that the script knows where to place it.
+If you have windows with similar WM_CLASS and they take a long time to warm up (such as a connection that has an initial popup that says connecting but ends in a different window), then you should tune the Window Warmup Delay setting in the json config.
+The Window Warmup Delay accepts an integer which translates into how many seconds the script will wait after opening the window. You should tune this setting to the amount of time the window you're opening reaches it's ready state.
+Failure to do so will result in windows being misplaced or not opened. For clarity, this is ONLY an issue with windows that share WM_CLASS. Unique windows will not need this type of tuning.
