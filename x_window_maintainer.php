@@ -75,29 +75,6 @@ function custom_load($value)
     }
 }
 
-
-/**
- * This function returns a list of currently open window ids vis wnckprop
- * 
- * @return array $windows - The list of currently open windows
- */
-function getWindowList()
-{
-    $cmd = 'wnckprop --list';
-    $results = my_shell_exec($cmd);
-    $windows = [];
-    if (!empty($results['stdout'])) {
-        $result_array = explode("\n", $results['stdout']);
-        foreach ($result_array as $line) {
-            $line_array = explode(":", $line);
-            if (!empty($line_array[0])){
-                $windows[] = $line_array[0];
-            }
-        }
-    }
-    return $windows;
-}
-
 /**
  * This function compares the currently open windows with a previous list of open windows and returns the difference
  * 
@@ -106,7 +83,13 @@ function getWindowList()
  */
 function getWindowDiff($previous_windows)
 {
-    $current_windows = getWindowList();
+    $compiled_windows = compileWindows();
+    $current_windows = [];
+    foreach ($compiled_windows as $window_key => $window) {
+        if ($window['Desktop'] >= 0) {
+            $current_windows[] = $window_key;
+        }
+    }
     $diff = array_diff($current_windows, $previous_windows);
     return $diff;
 }
